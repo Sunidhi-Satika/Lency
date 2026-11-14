@@ -5,6 +5,8 @@ from PIL import Image
 from dotenv import load_dotenv
 from time import sleep
 import os
+import re
+import sys
 
 load_dotenv()
 HuggingFaceAPI = os.getenv("HuggingFaceAPI")
@@ -13,7 +15,7 @@ def open_images(prompt):
     folder_path = r"Data"
     prompt = prompt.replace(" ", "_")
 
-    files = [f"{prompt}{i}.jpg" for i in range(1, 4)]
+    files = [f"{prompt}{i}.jpg" for i in range(1, IMAGE_COUNT + 1)]
 
     for jpg_file in files:
         image_path = os.path.join(folder_path, jpg_file)
@@ -26,7 +28,9 @@ def open_images(prompt):
         except IOError:
             print(f"Unable to open: {image_path}")
 
-API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
+# old api-inference.huggingface.co host was retired; the router host replaces it
+API_URL = "https://router.huggingface.co/hf-inference/models/stabilityai/stable-diffusion-xl-base-1.0"
+IMAGE_COUNT = 2  # was 3; each image is a separate paid/rate-limited request
 headers = {"Authorization": f"Bearer {HuggingFaceAPI}"}
 
 async def query(prompt):
@@ -43,12 +47,12 @@ async def query(prompt):
 
 async def generate_images(prompt: str):
 
-    tasks = [query(prompt) for _ in range(3)] 
+    tasks = [query(prompt) for _ in range(IMAGE_COUNT)]
     image_data_list = await asyncio.gather(*tasks)
 
     if not any(image_data_list):  # Check if all requests failed
         print("No images were generated.")
-        return
+        return 0
 
     for i, image_data in enumerate(image_data_list):
         if image_data:
@@ -56,40 +60,15 @@ async def generate_images(prompt: str):
             with open(file_path, "wb") as f:
                 f.write(image_data)
             print(f"Image saved: {file_path}")
-
-        # Add a delay to avoid rate limits
-        sleep(5)
+    return sum(1 for d in image_data_list if d)
 
 def GenerateImages(prompt: str):
-    asyncio.run(generate_images(prompt))
+    prompt = re.sub(r"[^A-Za-z0-9 ]+", "", prompt.replace("generate image", "")).strip() or "art"
+    saved = asyncio.run(generate_images(prompt))
+    if not saved:
+        sys.exit(1)                      # tells main.py it failed so she doesn't claim success
     open_images(prompt)
 
-def main():
-    while True:
-        try:
-            with open(r"Frontend/Files/ImageGeneration.data", "r") as f:
-                data = f.read().strip()
-
-            if not data:
-                sleep(1)
-                continue
-
-            prompt, status = data.split(",")
-
-            if status == "True":
-                print("Generating Images...")
-                GenerateImages(prompt=prompt)
-
-                with open(r"Frontend/Files/ImageGeneration.data", "w") as f:
-                    f.write("False,False")
-
-                break
-            else:
-                sleep(1)
-
-        except Exception as e:
-            print(f"Error: {e}")
-            sleep(1)
-
 if __name__ == "__main__":
-    main()
+    # called by main.py with the prompt as an argument (no more polling a data file)
+    GenerateImages(" ".join(sys.argv[1:]) or "art")

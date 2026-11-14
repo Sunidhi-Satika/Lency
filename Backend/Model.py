@@ -1,18 +1,10 @@
-import cohere
 from rich import print
-from dotenv import dotenv_values
-
-env_vars = dotenv_values(".env")
-
-CohereAPIkey = env_vars.get("CohereAPIkey")
-
-co = cohere.Client(api_key = CohereAPIkey)
+from Backend.LLM import complete
+from Backend.Router import quick_route
 
 funcs = [
     "exit", "general", "realtime", "open", "close", "play", "generate image", "system", "content", "google search", "youtube search", "reminder", "SearchAndOpenFile"
 ]
-
-messages =[]
 
 preamble = """
 You are a very accurate Decision-Making Model, which decides what kind of a query is given to you.
@@ -41,7 +33,7 @@ If the file type is unclear, default to 'pdf'.
 -> Respond with 'google search (topic)' if a query is asking to search a specific topic on google but if the query is asking to search multiple topics on google, respond with 'google search 1st topic, google search 2nd topic' and so on.
 -> Respond with 'youtube search (topic)' if a query is asking to search a specific topic on youtube but if the query is asking to search multiple topics on youtube, respond with 'youtube search 1st topic, youtube search 2nd topic' and so on.
 *** If the query is asking to perform multiple tasks like 'open facebook, telegram and close whatsapp' respond with 'open facebook, open telegram, close whatsapp' ***
-*** If the user is saying goodbye or wants to end the conversation like 'bye jarvis.' respond with 'exit'.***
+*** If the user is saying goodbye or wants to end the conversation like 'bye lency.' respond with 'exit'.***
 *** Respond with 'general (query)' if you can't decide the kind of query or if a query is asking to perform a task which is not mentioned above. ***
 """
 
@@ -61,44 +53,40 @@ ChatHistory = [
 ]
 
 def FirstlayerDMM(prompt: str = "test"):
-    messages.append({"role": "user", "content": f"{prompt}"})
+    # instant path: obvious commands / greetings never need an LLM round trip
+    fast_route = quick_route(prompt)
+    if fast_route:
+        return fast_route
 
-    stream = co.chat_stream(
-        model='command-r-plus',
-        message=prompt,
-        temperature=0.7,
-        chat_history=ChatHistory,
-        prompt_truncation='OFF',
-        connectors=[],
-        preamble=preamble
-    )
+    chat =[{"role": "system", "content": preamble}]
+    for h in ChatHistory:
+        chat.append({"role": "user" if h["role"] == "User" else "assistant", "content": h["message"]})
+    chat.append({"role": "user", "content": str(prompt)})
 
-    response = ""
+    for _attempt in range(2):
+        try:
+            # small fast model: routing is a simple classification, no need for the big one
+            text = complete(chat, fast=True, temperature=0.2, max_tokens=300)
+        except Exception as e:
+            print(f"Router error: {e}")
+            break
 
-    for event in stream:
-        if event.event_type == "text-generation":
-            response += event.text
-    
-    response = response.replace("\n", "")
-    response = response.split(",")
+        # The old code split on commas and DROPPED every piece that didn't start with a keyword,
+        # silently cutting "general hi lency, tell me a fact" down to "general hi lency".
+        # Now such pieces are glued back onto the task they belong to.
+        tasks = []
+        for part in (p.strip() for p in text.replace("\n", "").split(",")):
+            if any(part.startswith(f) for f in funcs):
+                tasks.append(part)
+            elif tasks and part:
+                tasks[-1] += ", " + part
+        if tasks and "(query)" not in tasks:
+            return tasks
 
-    response = [i.strip() for i in response]
+    # router failed or returned nonsense -> treat as normal conversation
+    return [f"general {prompt}"]
 
-    temp =[]
 
-    for task in response:
-        for func in funcs:
-            if task.startswith(func):
-                temp.append(task)
-
-    response = temp
-
-    if "(query)" in response:
-        newresponse = FirstlayerDMM(prompt=prompt)
-        return newresponse
-    else:
-        return response
-    
 if __name__ == "__main__":
     while True:
         print(FirstlayerDMM(input(">>>  ")))

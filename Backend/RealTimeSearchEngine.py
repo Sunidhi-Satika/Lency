@@ -1,105 +1,48 @@
-from googlesearch import search
-from groq import Groq
-from json import load, dump
-import datetime
-from dotenv import dotenv_values
+from Backend.LLM import PERSONA, now_info, friendly_error
+from Backend.Chatbot import run_chat
 
-env_vars = dotenv_values(".env")
 
-Username = env_vars.get("Username")
-Assistantname = env_vars.get("Assistantname")
-GroqAPIkey = env_vars.get("GroqAPIkey")
+def WebSearch(query):
+    """Top web results as text for the LLM.
 
-client = Groq(api_key=GroqAPIkey)
+    The old googlesearch scraper now returns nothing (Google blocks it), so real-time questions
+    silently got no data. ddgs with the Brave backend answers in ~1.5 s; 'auto' (all engines,
+    slower) is the fallback.
+    """
+    from ddgs import DDGS
+    results, last = [], None
+    for backend in ("brave", "auto"):
+        try:
+            results = DDGS(timeout=6).text(query, max_results=5, backend=backend)
+            if results:
+                break
+        except Exception as e:
+            last = e
+    if not results:
+        print(f"Search error: {last}")
+        return "No search results could be fetched."
+    out = f"Web search results for '{query}':\n[start]\n"
+    for r in results:
+        out += f"Title: {r.get('title', '')}\nDescription: {r.get('body', '')}\n\n"
+    return out + "[end]"
 
-System = f"""Hello, I am {Username}, You are a very accurate and advanced AI chatbot named {Assistantname} which has real-time up-to-date information from the internet.
-*** Provide Answers In a Professional Way, make sure to add full stops, commas, question marks, and use proper grammar.***
-*** Just answer the question from the provided data in a professional way. ***"""
 
-try:
-    with open(r"Data/ChatLog.json", "r") as f:
-        messages = load(f)
-except FileNotFoundError:
-    with open(r"Data/ChatLog.json", "w") as f:
-        dump([],f)
-
-def GoogleSearch(query):
-    results = list(search(query, advanced=True, num_results=5))
-    Answer = f"The search results for {query} are: \n[start]\n"
-
-    for i in results:
-        Answer += f"Title: {i.title}\nDescription: {i.description}\n\n"
-
-    Answer+="[end]"
-    return Answer
-
-def AnswerModifier(Answer):
-    Answer = Answer.replace("*", "")
-    lines = Answer.split("\n")
-    non_empty_lines = [line for line in lines if line.strip()]
-    modified_answer = '\n'.join(non_empty_lines)
-    return modified_answer
-
-SystemChatBot = [
-    {"role": "system", "content": System},
-    {"role": "user", "content": "Hi"},
-    {"role": "assistant", "content": "Hello, how can I help you?"}
-]
-
-def Information():
-    currentdatetime = datetime.datetime.now()
-    day = currentdatetime.strftime("%A")
-    date = currentdatetime.strftime("%d")
-    month = currentdatetime.strftime("%B")
-    year = currentdatetime.strftime("%Y")
-    hour = currentdatetime.strftime("%H")
-    minutes = currentdatetime.strftime("%M")
-    seconds = currentdatetime.strftime("%S")
-
-    data = f"please use this real-time information if needed,\n"
-    data += f"Day: {day}, Date: {date}, Month: {month}, Year: {year},\n"
-    data += f"Time: {hour} hours, {minutes} minutes, {seconds} seconds\n"
-    return data
-
-def RealTimeSearchEngine(prompt):
-    global SystemChatBot, messages
-
+def RealTimeSearchEngine(prompt, speaker=None):
     try:
-        with open(r"Data/ChatLog.json", "r") as f:
-                messages = load(f)        
-        messages.append({"role": "user", "content": f"{prompt}"})
-
-        SystemChatBot.append({"role": "system", "content": GoogleSearch(prompt)})
-
-        completion = client.chat.completions.create(
-                model="llama3-70b-8192",
-                messages=SystemChatBot + [{"role": "system", "content": Information()}] + messages,
-                max_tokens=1024,
-                temperature=0.7,
-                top_p=1,
-                stream=True,
-                stop=None
-            )
-        Answer = ""
-
-        for chunk in completion:
-            if chunk.choices[0].delta.content:
-                Answer += chunk.choices[0].delta.content
-
-        Answer = Answer.replace("</s>", "")
-
-        messages.append({"role": "assistant", "content": Answer})
-        with open(r"Data/ChatLog.json", 'w') as f:
-            dump(messages, f, indent=4)
-
-        SystemChatBot.pop()
-        return AnswerModifier(Answer=Answer)
+        system = [
+            {"role": "system", "content": PERSONA},
+            {"role": "system", "content": "Answer the question using the web results below, in your own warm words. Do not read them out verbatim."},
+            {"role": "system", "content": WebSearch(prompt)},
+            {"role": "system", "content": now_info()},
+        ]
+        # history is capped and the (large) search dump is never saved to it
+        return run_chat(system, prompt, speaker, temperature=0.7)
 
     except Exception as e:
-            print(f"Error: {e}")
-            return "An error occured while processing your request."
+        return friendly_error(e)
+
 
 if __name__ == "__main__":
     while True:
-        prompt = input("Enter : ")
-        print(RealTimeSearchEngine(prompt))
+        print(RealTimeSearchEngine(input("Enter : ")))
+

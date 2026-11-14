@@ -1,0 +1,8 @@
+.env
+venv/
+__pycache__/
+Data/ChatLog.json
+Data/settings.json
+Data/*.jpg
+Data/*.txt
+*.bak

@@ -1,221 +1,276 @@
-from Frontend.GUI import (
-GraphicalUserInterface,
-SetAssistantStatus,
-ShowTextToScreen,
-TempDirectoryPath,
-SetMicrophoneStatus,
-AnswerModifier,
-QueryModifier,
-GetMicrophoneStatus,
-GetAssistantStatus )
+import os
+import sys
+
+# Always run from the project folder so every relative path (.env, Data/) resolves,
+# no matter where the app is launched from. Must happen before the other imports.
+ROOT = os.path.dirname(os.path.abspath(__file__))
+os.chdir(ROOT)
+
+from Frontend.GUI import GraphicalUserInterface, QueryModifier, AnswerModifier
+from Backend import State
 from Backend.Model import FirstlayerDMM
 from Backend.Automation import Automation
-from Backend. SpeechToText import SpeechRecognition
 from Backend.RealTimeSearchEngine import RealTimeSearchEngine
 from Backend.Chatbot import ChatBot
-from Backend.TextToSpeech import TextToSpeech
+from Backend import Reminders, Weather, Calc
+from Backend.TextToSpeech import TextToSpeech, LiveSpeaker, list_voices, set_voice
 from dotenv import dotenv_values
 from asyncio import run
-from time import sleep
+import random
 import subprocess
 import threading
+import traceback
 import json
-import os
 import psutil
 
-IGscript_path = r"D:\A ki H G ki S undali\Backend\ImageGeneration.py"
-venv_python = r"D:\A ki H G ki S undali\.venv\Scripts\python.exe"
+IGscript_path = os.path.join(ROOT, "Backend", "ImageGeneration.py")
 env_vars = dotenv_values(".env")
 Username = env_vars.get("Username")
 Assistantname = env_vars.get("Assistantname")
 DefaultMessage = f'''{Username} : Hello {Assistantname}, How are you?
-{Assistantname} : Welcome {Username}. I am doing well. How may I help you? '''
-subprocesses = []
+{Assistantname} : Hi {Username}! I'm doing great, and even better now that you're here. What shall we do today? '''
 Functions = ["open", "close", "play", "system", "content", "google search", "youtube search", "SearchAndOpenFile"]
 
-def ShowDefaultChatIfNoChats():
-    File = open(r'Data/Chatlog.json', "r", encoding='utf-8')
-    if len(File.read())<5:
-        with open(f"{TempDirectoryPath}/Database.data", 'w', encoding='utf-8') as file:
-            file.write("")
-        
-        with open(f"{TempDirectoryPath}/Responses.data",'w', encoding='utf-8') as file:
-            file.write(DefaultMessage)
+DoneLines = [
+    "Done!",
+    "All set... anything else?",
+    "There you go.",
+    "Sorted! What's next?",
+    "On it... and done!",
+    "Easy peasy. What else?",
+]
 
+FailLines = [
+    "Hmm, I couldn't get that done. Could you check it?",
+    "Sorry... that one didn't work.",
+    "Oops, something went wrong with that.",
+]
+PartlyLines = [
+    "I did some of it, but not everything went through.",
+    "Part of that worked... the rest didn't, sorry.",
+]
+
+# spoken instantly while a web search runs, so she never goes quiet and then suddenly answers
+SearchFillers = [
+    "Hmm, let me check that.",
+    "Ooh, good question... one sec.",
+    "Let me look that up.",
+    "Okay, give me a moment.",
+]
+
+
+# ---------------------------------------------------------------- startup: show history
 def ReadChatLogJson():
-    with open(r'Data/Chatlog.json', "r", encoding='utf-8') as file:
-        chatlog_data = json.load(file)
-    return chatlog_data
+    try:
+        with open(r'Data/ChatLog.json', "r", encoding='utf-8') as file:
+            return json.load(file)
+    except (FileNotFoundError, ValueError):
+        return []
 
-def ChatLogIntegration():
-    json_data = ReadChatLogJson()
-    formatted_chatlog = ""
-    for entry in json_data:
-
-        if entry["role"] == "user":
-            formatted_chatlog += f"User: {entry['content']}\n"
-        elif entry["role"] == "assistant":
-            formatted_chatlog += f"Assistant: {entry['content']}\n"
-
-    formatted_chatlog = formatted_chatlog.replace("User", Username + " ")
-    formatted_chatlog = formatted_chatlog.replace("Assistant", Assistantname + " ")
-
-    with open(rf"{TempDirectoryPath}/Database.data", 'w', encoding='utf-8') as file:
-        file.write(AnswerModifier(formatted_chatlog))
-
-def ShowChatsOnGUI():
-    File = open(rf"{TempDirectoryPath}/Database.data","r", encoding='utf-8')
-    Data = File.read()
-    if len(str(Data))>0:
-        lines = Data.split('\n')
-        result = '\n'.join(lines)
-        File.close()
-        File = open(rf"{TempDirectoryPath}/Responses.data", "w", encoding='utf-8')
-        File.write(result)
-        File.close()
+def LoadHistoryToGUI():
+    lines = []
+    for entry in ReadChatLogJson():
+        if entry.get("role") == "user":
+            lines.append(f"{Username} : {entry['content']}")
+        elif entry.get("role") == "assistant":
+            lines.append(f"{Assistantname} : {entry['content']}")
+    State.post(AnswerModifier("\n".join(lines)) if lines else DefaultMessage, kind="history")
 
 def InitialExecution():
-    SetMicrophoneStatus("False")
-    ShowTextToScreen("")
-    ShowDefaultChatIfNoChats()
-    ChatLogIntegration()
-    ShowChatsOnGUI()
+    os.makedirs("Data", exist_ok=True)
+    if not os.path.exists(r"Data/ChatLog.json"):
+        with open(r"Data/ChatLog.json", "w", encoding="utf-8") as f:
+            f.write("[]")
+    State.set_mic(False)
+    State.set_status("Available...")
+    LoadHistoryToGUI()
 
 InitialExecution()
 
-def MainExecution():
 
+# ---------------------------------------------------------------- one request
+def Say(text):
+    """Speak and show a short fixed line."""
+    State.post(f"{Assistantname}: {text}")
+    State.set_status("Answering...")
+    TextToSpeech(text)
+
+
+def ChangeVoice(arg):
+    voices = [(k, label, female) for k, label, female in list_voices()]
+    if arg == "list" or not arg:
+        names = ", ".join(label.split(" (")[0] for _, label, female in voices if female)
+        Say(f"I can sound like {names}... just say change voice to, and a name.")
+    elif set_voice(arg):
+        Say("Okay... how's this? I think I like it.")
+    else:
+        names = ", ".join(label.split(" (")[0] for _, label, female in voices if female)
+        Say(f"Hmm, I don't have a voice called {arg}. Try {names}.")
+
+
+def Alert(item):
+    """A reminder, timer or alarm has come due: chime, show it, notify, and say it."""
+    text = Reminders.alert_text(item)
+    State.post(f"{Assistantname}: {text}")
+    State.notify(f"{Assistantname}: " + ("Timer" if item["kind"] == "timer" else "Alarm" if item["kind"] == "alarm"
+                                       else "Reminder"), text)
+    try:
+        import winsound
+        for _ in range(3 if item["kind"] == "alarm" else 1):
+            winsound.Beep(880, 140)
+            winsound.Beep(1175, 220)
+    except Exception:
+        pass
+    Say(text)
+
+
+def Reply(generate, query, filler=None):
+    """Run an answer generator with live speech: audio starts with the first sentence."""
+    speaker = LiveSpeaker()
+    if filler:
+        speaker.say_now(random.choice(filler))
+        State.set_status("Searching...")
+    answer = generate(query, speaker)
+    State.post(f"{Assistantname}: {answer}")
+    State.set_status("Answering...")
+    if not speaker.fed_any:           # e.g. an error message that was never streamed
+        speaker.feed(answer)
+    speaker.finish()                  # returns once she has finished speaking
+
+def MainExecution(text):
+    State.clear_cancel()
     TaskExecution = False
+    ok = failed = 0
     ImageExecution = False
     ImageGenerationQuery = ""
 
-    SetAssistantStatus("Listening...")
-    Query = SpeechRecognition()
-
-    ShowTextToScreen(f"{Username}: {Query}")
-    SetAssistantStatus("Thinking...") 
+    Query = QueryModifier(text)
+    State.post(f"{Username}: {Query}")
+    State.set_status("Thinking...")
     Decision = FirstlayerDMM(Query)
 
-    G = any([i for i in Decision if i.startswith("general")]) 
-    R = any([i for i in Decision if i.startswith("realtime")])
+    for q in Decision:                       # "change voice to heera"
+        if q.startswith("voice"):
+            ChangeVoice(q[5:].strip())
+            return
+
+    if any(i.startswith("reminder") for i in Decision):      # reminders, timers, alarms, snooze, cancel, list
+        for i in [i for i in Decision if i.startswith("reminder")]:
+            Say(Reminders.handle(i))
+        Decision = [i for i in Decision if not i.startswith("reminder")]
+        if not Decision:
+            return
+
+    for i in [i for i in Decision if i.startswith(("weather", "city", "calc"))]:   # local, instant, no LLM
+        if i.startswith("city"):
+            Say(Weather.set_home_city(i[4:].strip()))
+        elif i.startswith("weather"):
+            Say(Weather.answer(i[7:].strip()))
+        else:
+            answer = Calc.answer(i[4:].strip())
+            if answer:
+                Say(answer)
+            else:                                   # not a calculation after all: let her chat about it
+                Reply(ChatBot, QueryModifier(i[4:].strip()))
+    Decision = [i for i in Decision if not i.startswith(("weather", "city", "calc"))]
+    if not Decision:
+        return
+
+    R = any(i.startswith("realtime") for i in Decision)
 
     Mearged_query = " and ".join(
-        [" ".join(i.split() [1:]) for i in Decision if i.startswith("general") or i.startswith("realtime")]
+        [" ".join(i.split()[1:]) for i in Decision if i.startswith("general") or i.startswith("realtime")]
     )
 
     for queries in Decision:
-        if "generate" in queries: 
-            ImageGenerationQuery = str(queries)
+        if queries.startswith("generate image"):
+            ImageGenerationQuery = queries[len("generate image"):].strip() or "art"
             ImageExecution = True
 
     for queries in Decision:
-        if TaskExecution == False: 
-            if any(queries.startswith(func) for func in Functions): 
-                run(Automation(list(Decision)))
-                TaskExecution = True
+        if not TaskExecution and any(queries.startswith(func) for func in Functions):
+            ok, failed = run(Automation(list(Decision)))
+            TaskExecution = True
 
-    if ImageExecution == True:
-
-        with open(r"Frontend/Files/ImageGeneration.data", "w") as file:
-            file.write(f"{ImageGenerationQuery},True")
-
+    if ImageExecution:
         try:
-            p1 = subprocess.Popen(
-                [venv_python, IGscript_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                shell=False,
-            )
-            stdout, stderr = p1.communicate()
-
-            if stdout:
-                print(f"ImageGeneration.py Output:\n{stdout.decode()}")
-
-            if stderr:
-                print(f"ImageGeneration.py Error:\n{stderr.decode()}")
-
+            State.set_status("Creating...")
+            done = subprocess.run([sys.executable, IGscript_path, ImageGenerationQuery],
+                                  capture_output=True, text=True, errors="replace", cwd=ROOT)
+            if done.stdout:
+                print(f"ImageGeneration.py Output:\n{done.stdout}")
+            if done.stderr:
+                print(f"ImageGeneration.py Error:\n{done.stderr}")
+            if done.returncode == 0:
+                ok += 1
+            else:
+                failed += 1
         except Exception as e:
             print(f"Error starting ImageGeneration.py: {e}")
-        
-    if G and R or R:
+            failed += 1
 
-        SetAssistantStatus("Searching...") 
-        Answer = RealTimeSearchEngine(QueryModifier(Mearged_query)) 
-        ShowTextToScreen(f"{Assistantname}: {Answer}")
-        SetAssistantStatus("Answering...") 
-        TextToSpeech(Answer)
-        return True
+    if R:
+        State.set_status("Searching...")
+        Reply(RealTimeSearchEngine, QueryModifier(Mearged_query), filler=SearchFillers)
+        return
 
-    else:
-        for Queries in Decision:
+    for Queries in Decision:
+        if Queries.startswith("general"):
+            State.set_status("Thinking...")
+            Reply(ChatBot, QueryModifier(Queries.replace("general", "", 1)))
+            return
 
-            if "general" in Queries:
-                SetAssistantStatus("Thinking...")
-                QueryFinal = Queries.replace("general","")
-                Answer = ChatBot(QueryModifier(QueryFinal))
-                ShowTextToScreen(f"{Assistantname}: {Answer}") 
-                SetAssistantStatus("Answering...")
-                TextToSpeech(Answer) 
-                return True
+        elif Queries.startswith("exit"):
+            Reply(ChatBot, QueryModifier("Okay, Bye!"))
+            cleanup()
+            os._exit(0)
 
-            elif "realtime" in Queries:
-                SetAssistantStatus("Searching...")
-                QueryFinal = Queries.replace("realtime","")
-                Answer = RealTimeSearchEngine(QueryModifier(QueryFinal)) 
-                ShowTextToScreen(f"{Assistantname}: {Answer}")
-                SetAssistantStatus("Answering...") 
-                TextToSpeech(Answer)
-                return True
+    # only tasks (open/close/play/...) were requested: short spoken confirmation
+    if TaskExecution or ImageExecution:
+        if failed and ok:
+            Say(random.choice(PartlyLines))
+        elif failed:
+            Say(random.choice(FailLines))
+        else:
+            Say(random.choice(DoneLines))
 
-            elif "exit" in Queries:
-                QueryFinal = "Okay, Bye!"
-                Answer = ChatBot(QueryModifier(QueryFinal)) 
-                ShowTextToScreen(f"{Assistantname}: {Answer}")
-                SetAssistantStatus("Answering...") 
-                TextToSpeech(Answer)
-                SetAssistantStatus("Answering...")
-                cleanup()
-                os._exit(1)
 
 def cleanup():
+    """Stop only what THIS app started (subprocesses). The very first version terminated
+    every python/chrome/msedge process on the PC."""
     print("Cleaning up background processes...")
-    current_pid = os.getpid()
-
-    processes_to_kill = ["python", "msedge", "chrome", "chromium", "pyqtwebengine", "tensorflow_model_server"]
-
-    for proc in psutil.process_iter(attrs=['pid', 'name']):
-        try:
-            if proc.info['name']:
-                process_name = proc.info['name'].lower()
-                if any(p in process_name for p in processes_to_kill) and proc.info['pid'] != current_pid:
-                    print(f"Debug: Terminating {proc.info['name']} (PID: {proc.info['pid']})")
-                    proc.terminate()
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            pass
-
-    print("Cleanup complete.")
+    try:
+        for child in psutil.Process(os.getpid()).children(recursive=True):
+            try:
+                child.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    except psutil.Error:
+        pass
 
 
 def FirstThread():
+    """Waits for text (typed, or dictated by Windows Voice Typing into the box) and answers it."""
     while True:
-        CurrentStatus = GetMicrophoneStatus()
-
-        if CurrentStatus == "True":
-            MainExecution()
-
-        else:
-            AIStasus = GetAssistantStatus()
-
-            if "Available..." in AIStasus:
-                sleep(0.1)
+        try:
+            text = State.wait_text(timeout=0.1)
+            if text:
+                MainExecution(text)
             else:
-                SetAssistantStatus("Available...")
+                for item in Reminders.pop_due():       # runs only between requests, never over her speech
+                    Alert(item)
+            if not State.has_text():
+                State.set_status("Available...")
+        except Exception:
+            traceback.print_exc()
+            State.set_status("Oops, try again...")
+            threading.Event().wait(1)
+            State.set_status("Available...")
 
-def SecondThread():
-
-    GraphicalUserInterface()
 
 if __name__ == "__main__":
-    thread2 = threading.Thread(target=FirstThread, daemon=True)
-    thread2.start()
-    SecondThread()
+    threading.Thread(target=FirstThread, daemon=True).start()
+    try:
+        GraphicalUserInterface(start_hidden="--tray" in sys.argv)
+    finally:
+        cleanup()
