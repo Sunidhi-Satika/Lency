@@ -6,20 +6,20 @@ import datetime
 import threading
 from dotenv import dotenv_values
 from PyQt5.QtWidgets import (QApplication, QScrollArea, QMainWindow, QPushButton, QWidget, QVBoxLayout, QLabel,
-                             QHBoxLayout, QStackedWidget, QShortcut, QSystemTrayIcon, QFrame, QLineEdit, QButtonGroup, QComboBox, QListView)
-from PyQt5.QtCore import Qt, QSize, QTimer, QPointF, QRect, QEvent
+                             QHBoxLayout, QStackedWidget, QShortcut, QSystemTrayIcon, QFrame, QLineEdit, QButtonGroup, QMenu, QActionGroup, QSizeGrip, QSizePolicy)
+from PyQt5.QtCore import Qt, QSize, QTimer, QPointF, QRect, QEvent, pyqtSignal
 from PyQt5.QtGui import (QIcon, QPainter, QColor, QFont, QFontMetrics,
                          QKeySequence, QRadialGradient, QPen, QBrush, QPainterPath, QImage, QPixmap)
 
 try:
     from Frontend import Theme as T
-    from Frontend.VoiceTyping import DictationTyper
+    from Frontend.VoiceTyping import DictationTyper, VoiceTyper
     from Frontend.Tray import Tray
 except ImportError:  # launched as `python Frontend/GUI.py`
     import Theme as T
-    from VoiceTyping import DictationTyper
+    from VoiceTyping import DictationTyper, VoiceTyper
     from Tray import Tray
-from Backend import State
+from Backend import State, Settings
 from Backend.TextToSpeech import list_voices, set_voice, current_voice_key, TextToSpeech
 
 env_vars = dotenv_values(".env")
@@ -225,8 +225,9 @@ class InputBar(QFrame):
         super().__init__(parent)
         self.setObjectName("inputbar")
         self.setFixedHeight(58)
-        self.setMinimumWidth(620)
+        self.setMinimumWidth(240)
         self.setMaximumWidth(760)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.icon_off = QIcon(GraphicsDirectoryPath('Mic_off.png'))
         self.icon_on = QIcon(GraphicsDirectoryPath('Mic_on.png'))
 
@@ -285,12 +286,23 @@ class InputBar(QFrame):
         self.mic.setToolTip("Listening (speech goes to Windows speech recognition). Tap to stop" if on else "Tap to talk")
 
 
+def _centered(widget):
+    """Let a max-width widget fill a narrow window but stay centred (not left-stuck) in a wide one."""
+    holder = QWidget()
+    row = QHBoxLayout(holder)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.addStretch(1)
+    row.addWidget(widget, 100)
+    row.addStretch(1)
+    return holder
+
+
 # =========================================================================== screens
 ACCENT = {"idle": T.BLUE, "listening": T.MAGENTA, "thinking": T.BLUE, "searching": T.CYAN, "answering": T.MAGENTA}
 
 
 def status_html(text, state):
-    return (f"<span style='color:{ACCENT.get(state, T.BLUE)}'>&#9679;</span>&nbsp;&nbsp;"
+    return (f"<span style='color:{ACCENT.get(state, T.BLUE)}'>&#9679;</span>&nbsp;"
             f"<span style='color:{T.FG}'>{text}</span>")
 
 
@@ -301,18 +313,18 @@ class HomeScreen(QWidget):
     def __init__(self, on_mic):
         super().__init__()
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(40, 10, 40, 34)
+        lay.setContentsMargins(22, 10, 22, 26)
         lay.setSpacing(10)
 
         self.greet = QLabel("")
         self.greet.setAlignment(Qt.AlignCenter)
-        self.greet.setStyleSheet(f"color: {T.FG}; font-family: '{T.UI_DISPLAY}'; font-size: 13px; letter-spacing: 6px;")
+        self.greet.setStyleSheet(f"color: {T.FG}; font-family: '{T.UI_DISPLAY}'; font-size: 13px; letter-spacing: 4px;")
 
         self.user_line = QLabel("")
         self.user_line.setAlignment(Qt.AlignCenter)
         self.user_line.setWordWrap(True)
         self.user_line.setMaximumWidth(960)
-        self.user_line.setStyleSheet(f"color: {T.BLUE}; font-family: '{T.DISPLAY}'; font-size: 19px; font-style: italic;")
+        self.user_line.setStyleSheet(f"color: {T.BLUE}; font-family: '{T.DISPLAY}'; font-size: 16px; font-style: italic;")
 
         self.reply = QLabel("")
         self.reply.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
@@ -328,12 +340,12 @@ class HomeScreen(QWidget):
         lay.addStretch(3)
         lay.addWidget(self.greet, alignment=Qt.AlignCenter)
         lay.addSpacing(6)
-        lay.addWidget(self.user_line, alignment=Qt.AlignCenter)
-        lay.addWidget(self.reply, alignment=Qt.AlignCenter)
+        lay.addWidget(self.user_line, alignment=Qt.AlignHCenter)
+        lay.addWidget(self.reply, alignment=Qt.AlignHCenter)
         lay.addSpacing(8)
         lay.addWidget(self.status, alignment=Qt.AlignCenter)
         lay.addStretch(4)
-        lay.addWidget(self.bar, alignment=Qt.AlignCenter)
+        lay.addWidget(_centered(self.bar))
 
         self._target = ""
         self._shown = 0
@@ -362,11 +374,11 @@ class HomeScreen(QWidget):
         text = text.strip()
         if len(text) > 320:
             text = text[:300].rsplit(" ", 1)[0] + "...  (more in Chat)"
-        size = 38 if len(text) < 80 else 30 if len(text) < 170 else 23
+        size = 28 if len(text) < 80 else 23 if len(text) < 170 else 18
         font = QFont(T.DISPLAY, size)
         self.reply.setFont(font)
         self.reply.setStyleSheet(f"color: {T.FG_BRIGHT};")
-        width = max(300, min(960, self.width() - 120))
+        width = max(240, min(960, self.width() - 60))
         rect = QFontMetrics(font).boundingRect(QRect(0, 0, width, 5000), Qt.TextWordWrap | Qt.AlignHCenter, text)
         self.reply.setFixedHeight(rect.height() + 14)   # reserve the final height: no jumping while typing
         self._target = text
@@ -434,7 +446,7 @@ class ChatScreen(QWidget):
     def __init__(self, on_mic):
         super().__init__()
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 14, 28, 24)
+        lay.setContentsMargins(12, 10, 12, 18)
         lay.setSpacing(14)
 
         self.scroll = QScrollArea()
@@ -452,7 +464,7 @@ class ChatScreen(QWidget):
         lay.addWidget(self.scroll, 1)
 
         self.bar = InputBar(on_mic)
-        lay.addWidget(self.bar, alignment=Qt.AlignCenter)
+        lay.addWidget(_centered(self.bar))
         self._last = None
         self._bubbles = []
         self.scroll.verticalScrollBar().rangeChanged.connect(self._stick)
@@ -473,7 +485,7 @@ class ChatScreen(QWidget):
         self.scroll.verticalScrollBar().setValue(hi)
 
     def _limit(self):
-        return max(280, int(self.width() * 0.62))
+        return max(220, int(self.width() * 0.86))
 
     def resizeEvent(self, e):
         for b in self._bubbles:
@@ -537,15 +549,29 @@ class CustomTopBar(QWidget):
     def initUI(self):
         self.setFixedHeight(50)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 0, 12, 0)
+        layout.setContentsMargins(10, 0, 12, 0)
         layout.setSpacing(6)
 
-        title = QLabel(f"<span style='color:{T.MAGENTA}'>&#9679;</span>&nbsp;&nbsp;"
+        title = QPushButton()
+        title.setObjectName("brand")
+        title.setCursor(Qt.PointingHandCursor)
+        title.setToolTip("Menu: voice, clear chat, keep on top...")
+        inner = QHBoxLayout(title)
+        inner.setContentsMargins(10, 0, 10, 0)
+        label = QLabel(f"<span style='color:{T.MAGENTA}'>&#9679;</span>&nbsp;"
                        f"<span style='color:{T.FG_BRIGHT}; font-weight:600'>{str(Assistantname).capitalize()}</span>")
-        title.setStyleSheet("font-size: 17px; letter-spacing: 1px;")
+        label.setStyleSheet("font-size: 15px; background: transparent;")
+        label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        inner.addWidget(label)
+        title.setFixedSize(label.sizeHint().width() + 20, 32)
+        title.setStyleSheet(f"QPushButton#brand {{ background: transparent; border: none; border-radius: 9px;"
+                            f" color: {T.FG_BRIGHT}; font-size: 15px; font-weight: 600; padding: 5px 10px; text-align: left; }}"
+                            f" QPushButton#brand:hover {{ background: {T.BG_LIGHT}; }}")
+        title.clicked.connect(self.show_menu)
+        self.menu_button = title
 
-        self.home_button = self._btn("Home.png", "nav", icon_px=18, text="  Home")
-        self.message_button = self._btn("Chats.png", "nav", icon_px=18, text="  Chat")
+        self.home_button = self._btn("Home.png", "nav", icon_px=16, text=" Home")
+        self.message_button = self._btn("Chats.png", "nav", icon_px=16, text=" Chat")
         group = QButtonGroup(self)
         group.setExclusive(True)
         for b in (self.home_button, self.message_button):
@@ -559,49 +585,39 @@ class CustomTopBar(QWidget):
 
         minimize_button = self._btn("Minimize2.png", "win")
         minimize_button.clicked.connect(lambda: self.parent().showMinimized())
-        self.maximize_button = self._btn("Maximize.png", "win")
-        self.maximize_icon = QIcon(GraphicsDirectoryPath('Maximize.png'))
-        self.restore_icon = QIcon(GraphicsDirectoryPath('Minimize.png'))
-        self.maximize_button.clicked.connect(self.maximizeWindow)
         close_button = self._btn("Close.png", "close")
         close_button.clicked.connect(lambda: self.parent().close())
 
-        self.voice_box = QComboBox()
-        self.voice_box.setObjectName("voice")
-        self.voice_box.setCursor(Qt.PointingHandCursor)
-        self.voice_box.setToolTip(f"Change {Assistantname}'s voice")
-        for key, label, female in list_voices():
-            self.voice_box.addItem(label, key)
-        self.sync_voice()
-        self.voice_box.activated.connect(self._voice_chosen)
-
-        layout.addWidget(title)
-        layout.addStretch(1)
-        layout.addWidget(self.home_button)
-        layout.addWidget(self.message_button)
-        layout.addStretch(1)
-        self.stop_button = QPushButton("■  Stop")
+        self.stop_button = QPushButton("■")
         self.stop_button.setObjectName("chip")
+        self.stop_button.setFixedSize(34, 32)
+        self.stop_button.setStyleSheet("padding: 0; font-size: 13px;")
         self.stop_button.setCursor(Qt.PointingHandCursor)
         self.stop_button.setToolTip(f"Make {Assistantname} stop talking (Esc)")
         self.stop_button.clicked.connect(lambda: self.parent().stop_talking())
-        self.clear_button = QPushButton("Clear chat")
-        self.clear_button.setObjectName("chip")
-        self.clear_button.setCursor(Qt.PointingHandCursor)
-        self.clear_button.setToolTip("Erase the conversation history")
-        self.clear_button.clicked.connect(lambda: self.parent().clear_history())
 
+        self.voice_box = None            # voices now live in the menu
+
+        layout.addWidget(title)
+        layout.addStretch(1)
         layout.addWidget(self.stop_button)
-        layout.addWidget(self.clear_button)
-        layout.addWidget(self.voice_box)
-        layout.addSpacing(8)
+        layout.addSpacing(4)
         layout.addWidget(minimize_button)
-        layout.addWidget(self.maximize_button)
         layout.addWidget(close_button)
 
-        self.setStyleSheet(f"""
+        # the nav is placed by hand so it sits in the TRUE centre whatever is left/right of it
+        self.nav = QWidget(self)
+        nav_lay = QHBoxLayout(self.nav)
+        nav_lay.setContentsMargins(0, 0, 0, 0)
+        nav_lay.setSpacing(4)
+        nav_lay.addWidget(self.home_button)
+        nav_lay.addWidget(self.message_button)
+        self.nav.adjustSize()
+        self.nav.raise_()
+
+        sheet = f"""
             QPushButton#nav {{ color: {T.FG}; background: transparent; border: none; border-radius: 9px;
-                               padding: 6px 16px; font-size: 14px; }}
+                               padding: 5px 12px; font-size: 14px; }}
             QPushButton#nav:hover {{ background: {T.BG_LIGHT}; color: {T.FG_BRIGHT}; }}
             QPushButton#nav:checked {{ background: {T.BG_LIGHT}; color: {T.BLUE}; }}
             QPushButton#win, QPushButton#close {{ background: transparent; border: none; border-radius: 8px; }}
@@ -610,30 +626,48 @@ class CustomTopBar(QWidget):
             QPushButton#chip {{ background: transparent; color: {T.FG}; border: 1px solid {T.BORDER};
                                 border-radius: 9px; padding: 5px 12px; font-size: 13px; }}
             QPushButton#chip:hover {{ border: 1px solid {T.BLUE}; color: {T.FG_BRIGHT}; }}
-            QComboBox#voice {{ background: {T.BG_LIGHT}; color: {T.FG}; border: 1px solid {T.BORDER};
-                               border-radius: 9px; padding: 5px 12px; min-width: 120px; font-size: 13px; }}
-            QComboBox#voice:hover {{ border: 1px solid {T.BLUE}; color: {T.FG_BRIGHT}; }}
-            QComboBox#voice::drop-down {{ border: none; width: 24px; }}
-            QComboBox#voice::down-arrow {{ image: url({GraphicsDirectoryPath("Chevron.png").replace(chr(92), "/")});
-                               width: 12px; height: 12px; }}
-        """)
-        # the popup is its own top-level window, so it must be styled directly (not via the combo's stylesheet)
-        self.voice_box.setView(QListView())
-        self.voice_box.view().setStyleSheet(f"""
-            QListView {{ background: {T.BG_DARK}; color: {T.FG}; border: 1px solid {T.BORDER};
-                         border-radius: 8px; outline: none; padding: 4px; font-size: 13px; }}
-            QListView::item {{ padding: 7px 12px; border-radius: 6px; min-height: 20px; }}
-            QListView::item:hover, QListView::item:selected {{ background: {T.BG_LIGHT}; color: {T.BLUE}; }}
-        """)
+        """
+        self.setStyleSheet(sheet)
+        self.nav.setStyleSheet(sheet)
+
+    def resizeEvent(self, e):
+        self.nav.adjustSize()
+        self.nav.move((self.width() - self.nav.width()) // 2, (self.height() - self.nav.height()) // 2)
+        super().resizeEvent(e)
 
     def sync_voice(self):
-        """Keep the picker showing the active voice (it can also change by voice command)."""
-        i = self.voice_box.findData(current_voice_key())
-        if i >= 0 and i != self.voice_box.currentIndex() and not self.voice_box.view().isVisible():
-            self.voice_box.setCurrentIndex(i)
+        """Kept for the refresh loop: the voice list is built when the menu opens, so nothing to do."""
 
-    def _voice_chosen(self, index):
-        if set_voice(self.voice_box.itemData(index)):
+    def show_menu(self):
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{ background: {T.BG_DARK}; color: {T.FG}; border: 1px solid {T.BORDER}; border-radius: 8px;
+                     padding: 6px; font-size: 13px; }}
+            QMenu::item {{ padding: 7px 22px 7px 14px; border-radius: 6px; }}
+            QMenu::item:selected {{ background: {T.BG_LIGHT}; color: {T.BLUE}; }}
+            QMenu::separator {{ height: 1px; background: {T.BORDER}; margin: 5px 8px; }}""")
+        win = self.parent()
+        voices = menu.addMenu("Voice")
+        voices.setStyleSheet(menu.styleSheet())
+        grp = QActionGroup(voices)
+        for key, label, female in list_voices():
+            act = voices.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(key == current_voice_key())
+            act.triggered.connect(lambda _=False, k=key: self._voice_chosen(k))
+            grp.addAction(act)
+        menu.addSeparator()
+        top = menu.addAction("Keep on top")
+        top.setCheckable(True)
+        top.setChecked(win.on_top)
+        top.triggered.connect(win.set_on_top)
+        menu.addAction("Clear chat", win.clear_history)
+        menu.addSeparator()
+        menu.addAction("Quit", win.quit_app)
+        menu.exec_(self.menu_button.mapToGlobal(self.menu_button.rect().bottomLeft()))
+
+    def _voice_chosen(self, key):
+        if set_voice(key):
             threading.Thread(target=TextToSpeech, args=("Hi! This is how I sound now. Do you like it?",),
                              daemon=True).start()
 
@@ -643,14 +677,6 @@ class CustomTopBar(QWidget):
         p.setPen(QColor(T.BORDER))
         p.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
         p.end()
-
-    def maximizeWindow(self):
-        if self.parent().isMaximized():
-            self.parent().showNormal()
-            self.maximize_button.setIcon(self.maximize_icon)
-        else:
-            self.parent().showMaximized()
-            self.maximize_button.setIcon(self.restore_icon)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -665,13 +691,16 @@ class CustomTopBar(QWidget):
 
 
 class MainWindow(QMainWindow):
+    hotkey = pyqtSignal()
+    hide_sig = pyqtSignal(bool)                    # raised from the global-hotkey thread, handled on the GUI thread
 
     def __init__(self, enable_voice=True):
         super().__init__()
-        self.setWindowFlags(Qt.FramelessWindowHint)
+        self.on_top = bool(Settings.get("on_top", True))
+        self._apply_flags()
         self.setWindowTitle(str(Assistantname))
-        screen = QApplication.primaryScreen()
-        self.setGeometry(0, 0, screen.size().width(), screen.size().height())
+        self.setMinimumSize(340, 480)
+        self._place()
 
         self.stage = AuroraBackground()
         self.home = HomeScreen(self.toggle_mic)
@@ -691,16 +720,56 @@ class MainWindow(QMainWindow):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
         """)
+        # the permission strip: shown whenever she is waiting for a yes / no
+        self.confirm = QFrame(self.stage)
+        self.confirm.setObjectName("confirm")
+        self.confirm.setStyleSheet(f"""
+            QFrame#confirm {{ background: rgba(33,37,43,240); border: 1px solid {T.MAGENTA}; border-radius: 16px; }}
+            QLabel {{ color: {T.FG_BRIGHT}; background: transparent; font-size: 13px; }}
+            QPushButton {{ border-radius: 10px; padding: 5px 16px; font-size: 13px; border: 1px solid {T.BORDER};
+                           background: transparent; color: {T.FG}; }}
+            QPushButton:hover {{ border: 1px solid {T.BLUE}; color: {T.FG_BRIGHT}; }}
+            QPushButton#yes {{ background: {T.BLUE}; color: {T.BG_DARK}; border: none; font-weight: 600; }}""")
+        row = QHBoxLayout(self.confirm)
+        row.setContentsMargins(14, 8, 10, 8)
+        row.setSpacing(8)
+        self.confirm_label = QLabel("")
+        self.confirm_label.setWordWrap(True)
+        yes = QPushButton("Yes")
+        yes.setObjectName("yes")
+        no = QPushButton("No")
+        for b in (yes, no):
+            b.setCursor(Qt.PointingHandCursor)
+        yes.clicked.connect(lambda: State.submit_text("yes"))
+        no.clicked.connect(lambda: State.submit_text("no"))
+        row.addWidget(self.confirm_label, 1)
+        row.addWidget(yes)
+        row.addWidget(no)
+        self.confirm.hide()
         self.top_bar = CustomTopBar(self, self.stack)
         self.setMenuWidget(self.top_bar)
         self.setCentralWidget(self.stage)
         self.stack.currentChanged.connect(lambda i: self.stage.set_ribbon((0.74, 0.945)[i]))
         QShortcut(QKeySequence("Esc"), self, activated=self.stop_talking)
+        QShortcut(QKeySequence("Ctrl+Space"), self, activated=self.mic_key)
+        self.grip = QSizeGrip(self)
+        self.grip.setFixedSize(18, 18)
+        self.hotkey.connect(self.mic_key)
+        self.hide_sig.connect(lambda hide: self.setWindowOpacity(0.0 if hide else 1.0))
+        State.set_hide_hook(self.hide_sig.emit)
+        self._register_hotkey()
 
-        self.voice = DictationTyper(self, lambda: (self.home, self.chat_screen)[self.stack.currentIndex()].bar.edit) \
+        # Windows' own Win+H voice typing is the mic engine (the direct recogniser returns no text on this PC).
+        # Settings 'mic_engine': 'direct' switches to the popup-free recogniser if a PC supports it.
+        engine = DictationTyper if Settings.get("mic_engine", "winh") == "direct" else VoiceTyper
+        self.voice = engine(self, lambda: (self.home, self.chat_screen)[self.stack.currentIndex()].bar.edit) \
             if enable_voice else None
 
         self._quitting = False
+        # X = hide to the tray (reminders keep running) when launched by run.bat / at start-up;
+        # X = really quit when launched from a terminal. Settings "close_to_tray" (true/false) overrides.
+        pref = Settings.get("close_to_tray")
+        self._hide_on_close = bool(pref) if pref is not None else not (sys.stdout is not None and sys.stdout.isatty())
         self._told_tray = False
         icon_path = GraphicsDirectoryPath("Tray.png")
         self.setWindowIcon(QIcon(icon_path))
@@ -709,6 +778,80 @@ class MainWindow(QMainWindow):
         self._tick = QTimer(self)
         self._tick.timeout.connect(self.refresh)
         self._tick.start(60)      # pure in-memory reads now: no file polling
+
+    # ---- floating window --------------------------------------------------------------
+    def _apply_flags(self):
+        flags = Qt.FramelessWindowHint
+        if self.on_top:
+            flags |= Qt.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
+
+    def _place(self):
+        """A compact floating window at the right edge of the screen (or where it was last left)."""
+        saved = Settings.get("geom")
+        area = QApplication.primaryScreen().availableGeometry()
+        if isinstance(saved, list) and len(saved) == 4:
+            x, y, w, h = saved
+            if area.adjusted(-50, -50, 50, 50).contains(QRect(x, y, w, h)):
+                self.setGeometry(x, y, w, h)
+                return
+        w, h = 440, min(720, area.height() - 80)
+        self.setGeometry(area.right() - w - 24, area.top() + 40, w, h)
+
+    def _save_geom(self):
+        g = self.geometry()
+        if not self.isMaximized() and not self.isMinimized():
+            Settings.set("geom", [g.x(), g.y(), g.width(), g.height()])
+
+    def set_on_top(self, on):
+        self.on_top = bool(on)
+        Settings.set("on_top", self.on_top)
+        geo = self.geometry()
+        self._apply_flags()
+        self.setGeometry(geo)
+        self.show()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.grip.move(self.width() - self.grip.width() - 2, self.height() - self.grip.height() - 2)
+        w = min(self.width() - 24, 440)
+        self.confirm.setGeometry((self.width() - w) // 2, self.height() - 50 - 152, w, 58)
+        self.grip.raise_()
+
+    # ---- microphone key ------------------------------------------------------------------
+    def _register_hotkey(self):
+        key = Settings.get("mic_hotkey", "ctrl+alt+m")
+        try:
+            import keyboard
+            keyboard.add_hotkey(key, self.hotkey.emit)
+        except Exception as e:                       # keyboard hooks can be refused; the in-window keys still work
+            print(f"Global mic hotkey ({key}) unavailable: {e}")
+
+    def _tone(self, hz):
+        def beep():
+            try:
+                import winsound
+                winsound.Beep(hz, 70)
+            except Exception:
+                pass
+        threading.Thread(target=beep, daemon=True).start()
+
+    def mic_key(self):
+        """Ctrl+Alt+M anywhere / Ctrl+Space in the window: mic on or off. While she is talking it interrupts her and listens."""
+        if State.busy():
+            self.stop_talking()
+            State.set_mic(True)
+            self._tone(1000)
+            return
+        State.set_mic(not State.mic_on())
+        self._tone(1000 if State.mic_on() else 600)
+        if State.mic_on():
+            self.show_window()                    # Win+H types into the focused window, so Lency must be in front
+
+    def show_window(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
 
     def toggle_mic(self):
         State.set_mic(not State.mic_on())
@@ -741,6 +884,12 @@ class MainWindow(QMainWindow):
             if kind == "live":
                 self.home.on_message(text)
 
+        pend = State.get_pending()
+        if pend:
+            self.confirm_label.setText(pend["prompt"])
+            self.confirm.raise_()
+        self.confirm.setVisible(bool(pend))
+        self.top_bar.stop_button.setVisible(State.busy() or State.get_status() == "Answering...")
         status = State.get_status()
         listening = State.mic_on() and self.voice is not None and self.voice.active and status.startswith("Available")
         shown = "Listening..." if listening else status
@@ -752,8 +901,9 @@ class MainWindow(QMainWindow):
         self.chat_screen.bar.set_mic(on)
 
     def closeEvent(self, e):
-        if self.tray and not self._quitting:             # the X hides to the tray; reminders keep running
+        if self.tray and self._hide_on_close and not self._quitting:             # the X hides to the tray; reminders keep running
             e.ignore()
+            self._save_geom()
             self.hide()
             if not self._told_tray:
                 self._told_tray = True
@@ -762,9 +912,13 @@ class MainWindow(QMainWindow):
             return
         if self.voice:
             self.voice.shutdown()
+        if self.tray:
+            self.tray.hide()
         super().closeEvent(e)
+        QApplication.quit()                          # really end the program (the app keeps running on its own otherwise)
 
     def quit_app(self):
+        self._save_geom()
         self._quitting = True
         if self.tray:
             self.tray.hide()

@@ -1,6 +1,4 @@
 from AppOpener import close, open as appopen
-import webbrowser
-from pywhatkit import search, playonyt
 from rich import print
 import subprocess
 import keyboard
@@ -11,6 +9,7 @@ import re
 import math
 from urllib.parse import urlparse
 from Backend.LLM import complete, Username
+from Backend import Web
 
 SystemChatBot = [{"role": "system", "content": f"Hello, I am {Username}. You have to write content like letters, codes, applications, essays, notes, songs etc. Output only the requested content."}]
 
@@ -29,7 +28,8 @@ file_extensions = {
 }
 
 def GoogleSearch(Topic):
-    search(Topic)
+    from urllib.parse import quote_plus
+    Web.open_url("https://www.google.com/search?q=" + quote_plus(Topic))
     return True
 
 def Content(Topic):
@@ -54,12 +54,12 @@ def Content(Topic):
     return True
 
 def YoutubeSearch(Topic):
-    Url4Search = f"https://www.youtube.com/results?search_query={Topic}"
-    webbrowser.open(Url4Search)
+    from urllib.parse import quote_plus
+    Web.open_url("https://www.youtube.com/results?search_query=" + quote_plus(Topic))
     return True
 
 def PlayYoutube(query):
-    playonyt(query)
+    Web.play(query)                     # finds the video you named instead of the first hit
     return True
 
 _VAGUE = {"it", "this", "that", "them", "everything", "all", "something", "anything"}
@@ -80,6 +80,14 @@ def OpenApp(app):
     app = app.strip()
     if not app or app.lower() in _VAGUE:
         return False
+    site = Web.known_site(app)
+    if site:
+        Web.open_url(site)                                              # "open gmail", "open google drive"
+        return True
+    import re as _re
+    if not _re.search(r"\.(?:exe|lnk|bat|cmd|msi|txt|py|docx?|pdf|xlsx?|pptx?)$", app, _re.I) and _re.fullmatch(r"(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?:/\S*)?", app, _re.I):
+        Web.open_url(app if app.lower().startswith("http") else "https://" + app)       # "open github.com"
+        return True
     try:
         print(f"Debug: Trying to open {app}")
         appopen(app, match_closest=True, output=True, throw_error=True)
@@ -94,10 +102,10 @@ def OpenApp(app):
         ).strip().split()[0]
         print(f"debug: {websitelink}")
         if _site_matches(websitelink, app):
-            webbrowser.open(websitelink)
+            Web.open_url(websitelink)
             return True
         # the model's link is unverified: search for it instead of opening an invented domain
-        search(f"{app} official website")
+        Web.search(f"{app} official website")
         return True
     except Exception as e:
         print(f"Debug: Error while looking up a website -> {e}")

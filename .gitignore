@@ -1,8 +1,10 @@
+# secrets and local data
 .env
+Data/
+
+# python / environments
 venv/
+.venv/
 __pycache__/
-Data/ChatLog.json
-Data/settings.json
-Data/*.jpg
-Data/*.txt
+*.pyc
 *.bak

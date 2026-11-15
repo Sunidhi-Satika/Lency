@@ -187,41 +187,44 @@ class _Recognizer:
 
 
 class DictationTyper(VoiceTyper):
-    """Same behaviour as VoiceTyper, but speech goes straight to Windows' recogniser, so no
-    voice-typing popup appears. If Windows refuses (Online speech recognition switched off),
-    it quietly falls back to the Win+H method."""
+    """Speech goes straight to Windows' recogniser: no voice-typing popup. If Windows refuses
+    (Online speech recognition switched off) the mic turns off and she explains how to fix it."""
 
     def __init__(self, window, get_edit):
         self._rec = _Recognizer()
-        self._mode = "api"
         self._open = False
         super().__init__(window, get_edit, press=self._toggle)
 
-    @property
-    def needs_focus(self):
-        return self._mode != "api"      # direct recogniser only fills Lency's own box: works while you use other apps
+    needs_focus = False                 # fills Lency's own box: works while you use other apps
 
     def _toggle(self):
         self._open = not self._open
-        if self._mode == "api":
-            self._rec.start() if self._open else self._rec.stop()
-        else:
-            press_win_h()
+        self._rec.start() if self._open else self._rec.stop()
+
+    _told = False
 
     def _before_tick(self):
         if not self.active:
             return
-        if self._mode == "api":
-            if self._rec.error:
-                print(f"Voice: direct dictation unavailable ({self._rec.error}); falling back to Win+H.\n"
-                      "       For popup-free voice turn on Settings > Privacy > Speech > Online speech recognition.")
-                self._mode = "win"
-                self._rec.error = None
-                State.post("Lency: Voice popup mode is on. For a popup-free mic, turn on Online speech recognition "
-                           "in Windows Settings > Privacy > Speech.")
-                if self._open:
-                    press_win_h()
-                return
+        if self._rec.error:                     # Windows refused: say why, once. No Win+H popup, ever.
+            err, self._rec.error = self._rec.error, None
+            print(f"Voice: Windows speech recognition unavailable ({err})")
+            self._open = False
+            self.active = False
+            self._rec.stop()
+            State.set_mic(False)
+            State.post("Lency: I can't hear you yet. Windows needs 'Online speech recognition' turned on "
+                       "(Settings > Privacy & security > Speech). I opened that page for you; flip the switch, "
+                       "then tap the mic again.")
+            if not DictationTyper._told:
+                DictationTyper._told = True
+                try:
+                    import os
+                    os.startfile("ms-settings:privacy-speech")
+                except Exception:
+                    pass
+            return
+        if True:
             if self._rec.ended and self._open:                 # Windows ends sessions after long silence
                 self._rec.ended = False
                 self._rec.start()

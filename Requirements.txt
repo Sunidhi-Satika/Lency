@@ -1,7 +1,6 @@
 python-dotenv==1.1.1
 groq==0.30.0
 AppOpener==1.7
-pywhatkit==5.4
 pillow==11.1.0
 rich==14.0.0
 requests==2.32.4
@@ -19,3 +18,4 @@ winrt-Windows.Globalization==4!10.0.28000.2957
 winrt-Windows.Media.SpeechRecognition==4!10.0.28000.2957
 winrt-Windows.Media.SpeechSynthesis==4!10.0.28000.2957
 winrt-Windows.Storage.Streams==4!10.0.28000.2957
+uiautomation==2.0.29

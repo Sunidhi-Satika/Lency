@@ -8,7 +8,7 @@ quick_route(text) -> list of task strings (same format the LLM router returns) o
 """
 import re
 
-from Backend import Calc, Weather
+from Backend import Calc, Weather, Control, Paths, Messaging
 
 _FILLER = re.compile(
     r"^(?:(?:please|can you|could you|would you|hey+|hi+|hello+|yo|ok|okay|lency|"
@@ -38,21 +38,26 @@ _RULES = [
     (re.compile(rf"^(?:change|switch|set|use)(?: your| the)?(?: voice)?(?: to)? ({_VOICE_NAMES})(?: voice)?$"), "voice {}"),
     (re.compile(r"^(?:change|switch)(?: your)? voice$"), "voice list"),
     (re.compile(r"^(?:what|which) voices(?: do you have)?$"), "voice list"),
+    # spoken paths: "open D drive then projects", "open the work folder in D drive", "open D:\\Work"
+    (re.compile(r"^(?:open|show|go to|take me to|navigate to)(?: the| my)? (.*(?:\b[a-z] drive\b|\bdrive [a-z]\b|\bfolder\b|\bdirectory\b|\bpath\b|\bexplorer\b).*|[a-zA-Z]:[\\/].*)$"), "path {}"),
+    (re.compile(r"^(?:open|click|go to|play|show|pick|choose|select)(?: me)?(?: the)? (first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last|\d{1,2}(?:st|nd|rd|th)?) (?:one|result|link|video|search result|option)$"), "web result {}"),
     (re.compile(r"^open (?!my |file )(?:the )?(?:app |application |website |site )?" + _BAD_TARGET + r"(.+)$"), "open {}"),
     (re.compile(r"^close (?:the )?(?:app |application |window )?" + _BAD_TARGET + r"(.+)$"), "close {}"),
     # volume with a number: "set volume to 40", "increase the volume by 20"
     (re.compile(r"^(?:set|change|put|make)(?: the| my)? volume (?:to|at) (\d{1,3})(?: ?%| percent)?$"), "system volume set {}"),
     (re.compile(r"^(?:increase|raise|turn up|up)(?: the)? volume(?: by (\d{1,3}))?(?: ?%| percent)?$"), "system volume up {}"),
     (re.compile(r"^(?:decrease|lower|reduce|turn down|down)(?: the)? volume(?: by (\d{1,3}))?(?: ?%| percent)?$"), "system volume down {}"),
-    (re.compile(r"^play (?:me )?(?:the )?(?:song |music |video )?(.+?)(?: on youtube)?$"), "play {}"),
+    (re.compile(r"^play (?:me )?(?:the )?(?:song |music |video )?(.+?)(?: on youtube)?$"), "web play {}"),
     (re.compile(r"^(?:google search|google) (.+)$"), "google search {}"),
     (re.compile(r"^search (?:for )?(.+?) on google$"), "google search {}"),
     (re.compile(r"^(?:youtube search|youtube) (.+)$"), "youtube search {}"),
     (re.compile(r"^search (?:for )?(.+?) on youtube$"), "youtube search {}"),
+    (re.compile(r"^(?:search|look up|find out)(?: for| about)? (.+?)(?: (?:in|on) (?:the |my )?(?:browser|web|chrome|edge|brave|firefox)| online)?$"), "web search {}"),
     (re.compile(r"^(?:generate|create|make|draw)(?: me)?(?: an?| some)?(?: image| picture| photo| drawing)(?: of)? (.+)$"),
      "generate image {}"),
 ]
 
+_PATHY = next(rx for rx, tpl in _RULES if tpl == "path {}")
 _CHITCHAT = re.compile(
     r"^(?:hi+|hello+|hey+|yo|sup|thanks?(?: you)?|thx|ok(?:ay)?|cool|nice|great|wow|lol|"
     r"good (?:morning|afternoon|evening|night)|how are you|how'?s it going|what'?s up|"
@@ -91,6 +96,9 @@ def _route_part(part):
     for rx, task in _MEDIA:
         if rx.match(p):
             return task
+    m = re.match(r"^open (?:my |the )?(.+?)(?: folder)?$", p)
+    if m and Paths.is_place(m.group(1)):
+        return "path " + p
     city = Weather.parse_city_command(p)
     if city:
         return "city " + city
@@ -110,6 +118,12 @@ def quick_route(text):
     # otherwise return None and let the LLM handle it (e.g. "play rock and roll").
     if re.search(r"\b(?:remind(?:er|ers)?|timers?|alarms?|snooze|wake me(?: up)?|time (?:is )?left)\b", q)             and not re.match(r"(?:please |hey |lency |can you |could you )*(?:play|open|close|google|youtube|search) ", q):
         return ["reminder " + text.strip()]
+    if Messaging.match(text):                              # WhatsApp / email drafts (always asks before sending)
+        return ["msg " + text.strip()]
+    if _PATHY.match(q) and not re.search(r" and (?:play|open|search|close|take|type) ", q):                                    # "open D drive then projects then report": one request, not three
+        return ["path " + text.strip()]
+    if Control.match(text):                                # brightness, screenshots, windows, tabs, clipboard, notes, memory, typing
+        return ["control " + text.strip()]
     parts = [x for x in re.split(r"\s*(?:,|\band\b|\bthen\b)\s*", q) if x.strip()]
     # a part that is only a greeting ("good morning, open spotify") is skipped, not a reason to give up
     parts = [x for x in parts if _FILLER.sub("", x.strip()).strip(" .?!,;")]

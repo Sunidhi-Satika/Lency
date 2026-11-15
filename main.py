@@ -12,7 +12,7 @@ from Backend.Model import FirstlayerDMM
 from Backend.Automation import Automation
 from Backend.RealTimeSearchEngine import RealTimeSearchEngine
 from Backend.Chatbot import ChatBot
-from Backend import Reminders, Weather, Calc
+from Backend import Reminders, Weather, Calc, Memory, Control, Confirm, Web, Paths, Messaging
 from Backend.TextToSpeech import TextToSpeech, LiveSpeaker, list_voices, set_voice
 from dotenv import dotenv_values
 from asyncio import run
@@ -25,8 +25,8 @@ import psutil
 
 IGscript_path = os.path.join(ROOT, "Backend", "ImageGeneration.py")
 env_vars = dotenv_values(".env")
-Username = env_vars.get("Username")
-Assistantname = env_vars.get("Assistantname")
+Username = env_vars.get("Username") or "You"
+Assistantname = env_vars.get("Assistantname") or "Lency"
 DefaultMessage = f'''{Username} : Hello {Assistantname}, How are you?
 {Assistantname} : Hi {Username}! I'm doing great, and even better now that you're here. What shall we do today? '''
 Functions = ["open", "close", "play", "system", "content", "google search", "youtube search", "SearchAndOpenFile"]
@@ -89,8 +89,12 @@ InitialExecution()
 
 
 # ---------------------------------------------------------------- one request
+_turn = {"said": [], "chat": False, "did": []}     # what happened during the current request (for memory)
+
+
 def Say(text):
     """Speak and show a short fixed line."""
+    _turn["said"].append(text)
     State.post(f"{Assistantname}: {text}")
     State.set_status("Answering...")
     TextToSpeech(text)
@@ -126,6 +130,7 @@ def Alert(item):
 
 def Reply(generate, query, filler=None):
     """Run an answer generator with live speech: audio starts with the first sentence."""
+    _turn["chat"] = True                    # the chat module writes its own memory entry
     speaker = LiveSpeaker()
     if filler:
         speaker.say_now(random.choice(filler))
@@ -138,6 +143,20 @@ def Reply(generate, query, filler=None):
     speaker.finish()                  # returns once she has finished speaking
 
 def MainExecution(text):
+    """One request, then record it in the shared memory (chat answers record themselves)."""
+    _turn.update(said=[], chat=False, did=[])
+    Query = QueryModifier(text)
+    try:
+        _MainExecution(text)
+    finally:
+        if not _turn["chat"]:
+            try:
+                Memory.remember(Query, did="; ".join(_turn["did"]), said=" ".join(_turn["said"]))
+            except Exception:
+                pass
+
+
+def _MainExecution(text):
     State.clear_cancel()
     TaskExecution = False
     ok = failed = 0
@@ -147,7 +166,16 @@ def MainExecution(text):
     Query = QueryModifier(text)
     State.post(f"{Username}: {Query}")
     State.set_status("Thinking...")
+    answered = Confirm.resolve(Query)         # was she waiting for a yes / no? ("send it", "no")
+    if answered is not None:
+        spoken, full = answered
+        if full:
+            State.post(f"{Assistantname}: {full}")
+        Say(spoken)
+        return
+    Query = Memory.resolve(Query)           # "open that song" -> "play <the song> on youtube"
     Decision = FirstlayerDMM(Query)
+    _turn["did"] = [d for d in Decision if not d.startswith(("general", "realtime", "exit", "control", "web ", "path ", "msg "))]
 
     for q in Decision:                       # "change voice to heera"
         if q.startswith("voice"):
@@ -160,6 +188,43 @@ def MainExecution(text):
         Decision = [i for i in Decision if not i.startswith("reminder")]
         if not Decision:
             return
+
+    for i in [i for i in Decision if i.startswith("msg ")]:                # drafts WhatsApp / email, then asks
+        State.set_status("Writing...")
+        result = Messaging.handle(i[4:])
+        if result is None:
+            Reply(ChatBot, QueryModifier(i[4:].strip()))
+            return
+        spoken, full = result
+        if full:
+            State.post(f"{Assistantname}: {full}")
+        Say(spoken)
+    Decision = [i for i in Decision if not i.startswith("msg ")]
+    if not Decision:
+        return
+
+    for i in [i for i in Decision if i.startswith(("web ", "path "))]:      # web search, YouTube video finder, spoken paths
+        State.set_status("Working...")
+        result = Web.handle(i[4:]) if i.startswith("web ") else Paths.handle(i[5:])
+        spoken, full = result if result else ("Hmm, I couldn't do that one.", None)
+        Say(spoken)
+    Decision = [i for i in Decision if not i.startswith(("web ", "path "))]
+    if not Decision:
+        return
+
+    for i in [i for i in Decision if i.startswith("control")]:        # PC control, notes, memory, typing...
+        State.set_status("Working...")
+        result = Control.handle(i[7:].strip())
+        if result is None:                                             # not a real control request: just chat
+            Reply(ChatBot, QueryModifier(i[7:].strip()))
+            return
+        spoken, full = result
+        if full:
+            State.post(f"{Assistantname}: {full}")
+        Say(spoken)
+    Decision = [i for i in Decision if not i.startswith("control")]
+    if not Decision:
+        return
 
     for i in [i for i in Decision if i.startswith(("weather", "city", "calc"))]:   # local, instant, no LLM
         if i.startswith("city"):
@@ -255,8 +320,13 @@ def FirstThread():
         try:
             text = State.wait_text(timeout=0.1)
             if text:
-                MainExecution(text)
+                State.set_busy(True)
+                try:
+                    MainExecution(text)
+                finally:
+                    State.set_busy(False)
             else:
+                Confirm.tidy_expired()                 # a question nobody answered: undo its draft
                 for item in Reminders.pop_due():       # runs only between requests, never over her speech
                     Alert(item)
             if not State.has_text():

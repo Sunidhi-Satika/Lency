@@ -3,7 +3,7 @@ from Backend.LLM import complete
 from Backend.Router import quick_route
 
 funcs = [
-    "exit", "general", "realtime", "open", "close", "play", "generate image", "system", "content", "google search", "youtube search", "reminder", "SearchAndOpenFile"
+    "exit", "general", "realtime", "open", "close", "play", "generate image", "system", "content", "google search", "youtube search", "reminder", "control", "web", "path", "msg", "SearchAndOpenFile"
 ]
 
 preamble = """
@@ -32,6 +32,10 @@ If the file type is unclear, default to 'pdf'.
 -> Respond with 'content (topic)' if a query is asking to write any type of content like application, codes, emails or anything else about a specific topic but if the query is asking to write multiple types of content, respond with 'content 1st topic, content 2nd topic' and so on.
 -> Respond with 'google search (topic)' if a query is asking to search a specific topic on google but if the query is asking to search multiple topics on google, respond with 'google search 1st topic, google search 2nd topic' and so on.
 -> Respond with 'youtube search (topic)' if a query is asking to search a specific topic on youtube but if the query is asking to search multiple topics on youtube, respond with 'youtube search 1st topic, youtube search 2nd topic' and so on.
+-> Respond with 'control (the user's request, word for word)' if the query is about: screen brightness, taking a screenshot, minimising/maximising/snapping/switching windows, browser tabs, battery/cpu/ram/disk/wifi status, the clipboard, taking or reading notes, remembering or forgetting facts about the user, typing text or pressing keys into another app.
+-> Respond with 'web search (topic)' to search the web in the browser, 'web play (song or video)' to play a video on YouTube, 'web result (number)' for 'open the third result'.
+-> Respond with 'path (the request word for word)' if the user wants to open a folder, drive or file by its location, like 'open D drive then projects then report'.
+-> Respond with 'msg (the request word for word)' if the user wants to send a WhatsApp message or an email to someone, like 'message mom saying i will be late' or 'email raj about the meeting'.
 *** If the query is asking to perform multiple tasks like 'open facebook, telegram and close whatsapp' respond with 'open facebook, open telegram, close whatsapp' ***
 *** If the user is saying goodbye or wants to end the conversation like 'bye lency.' respond with 'exit'.***
 *** Respond with 'general (query)' if you can't decide the kind of query or if a query is asking to perform a task which is not mentioned above. ***

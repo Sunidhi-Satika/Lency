@@ -1,5 +1,5 @@
 from json import load, dump
-from Backend import State, LLM
+from Backend import State, LLM, Notes
 from Backend.LLM import stream, PERSONA, now_info, clean, friendly_error
 
 LOG = r"Data/ChatLog.json"
@@ -22,6 +22,7 @@ def _write_log(messages):
 
 def run_chat(system_messages, user_text, speaker=None, temperature=0.9):
     """Stream an answer. If a LiveSpeaker is given, speech starts with the first sentence."""
+    system_messages = system_messages + Notes.facts_messages()      # what she was asked to remember
     messages = _read_log()
     messages.append({"role": "user", "content": str(user_text)})
     messages = messages[-MAX_HISTORY:]
